@@ -1,0 +1,87 @@
+name: 'gha-timeout-guard'
+description: 'Lint GitHub Actions workflows for missing job timeouts, missing concurrency groups and swallowed failures.'
+branding:
+  icon: 'clock'
+  color: 'orange'
+
+inputs:
+  dir:
+    description: 'Repository root or workflows directory to scan.'
+    required: false
+    default: '.'
+  max-timeout:
+    description: 'Report an explicit timeout-minutes above this ceiling. 0 disables the rule.'
+    required: false
+    default: '60'
+  suggest-timeout:
+    description: 'Value used in suggested timeout-minutes lines.'
+    required: false
+    default: '15'
+  min-severity:
+    description: 'Lowest severity to report: warning or error.'
+    required: false
+    default: 'warning'
+  fail-on:
+    description: 'Fail the step on findings at or above this level: warning, error or never.'
+    required: false
+    default: 'warning'
+  format:
+    description: 'Output format: table, json or markdown.'
+    required: false
+    default: 'markdown'
+  ignore:
+    description: 'Comma-separated rule ids to suppress.'
+    required: false
+    default: ''
+  version:
+    description: 'gha-timeout-guard version to install.'
+    required: false
+    default: 'v0.1.0'
+  summary:
+    description: 'Append the report to the job summary.'
+    required: false
+    default: 'true'
+
+outputs:
+  exit-code:
+    description: '0 clean, 1 findings at or above fail-on, 2 error.'
+    value: ${{ steps.guard.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version: 'stable'
+        cache: false
+
+    - name: Install gha-timeout-guard
+      shell: bash
+      run: go install github.com/moveeeax/gha-timeout-guard/cmd/gha-timeout-guard@${{ inputs.version }}
+
+    - name: Lint workflows
+      id: guard
+      shell: bash
+      run: |
+        args=(
+          --dir "${{ inputs.dir }}"
+          --max-timeout "${{ inputs.max-timeout }}"
+          --suggest-timeout "${{ inputs.suggest-timeout }}"
+          --min-severity "${{ inputs.min-severity }}"
+          --fail-on "${{ inputs.fail-on }}"
+          --format "${{ inputs.format }}"
+        )
+        if [ -n "${{ inputs.ignore }}" ]; then
+          args+=(--ignore "${{ inputs.ignore }}")
+        fi
+        # Findings exit 1 on purpose. Composite run steps execute under bash -e,
+        # so the exit code has to be captured before the shell aborts on it.
+        set +e
+        gha-timeout-guard "${args[@]}" | tee /tmp/gha-timeout-guard.out
+        code=${PIPESTATUS[0]}
+        set -e
+        echo "exit-code=${code}" >> "$GITHUB_OUTPUT"
+        if [ "${{ inputs.summary }}" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+          cat /tmp/gha-timeout-guard.out >> "$GITHUB_STEP_SUMMARY"
+        fi
+        exit "${code}"

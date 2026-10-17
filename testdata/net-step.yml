@@ -1,0 +1,19 @@
+name: deps
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: fetch release
+        run: |
+          # curl is mentioned in this comment and must not match
+          curl -fsSL https://example.invalid/tool.tar.gz -o tool.tar.gz
+      - name: pull image
+        run: docker pull alpine:3.20
+        timeout-minutes: 3
+      - name: unrelated
+        run: ./curl-helper.sh && echo wgetlog

@@ -1,0 +1,20 @@
+name: deploy
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: fetch toolchain
+        run: curl -fsSL https://example.com/tool.tar.gz | tar xz
+      - run: make build
+
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 720
+    continue-on-error: true
+    steps:
+      - run: ./deploy.sh

@@ -1,0 +1,10 @@
+name: slow
+on:
+  workflow_dispatch:
+
+jobs:
+  slow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - run: ./slow.sh

@@ -1,0 +1,8 @@
+# Built binary at the repository root only. A bare pattern would also match a
+# cmd/gha-timeout-guard/ source directory and silently drop its main.go.
+/gha-timeout-guard
+/dist/
+/coverage.out
+/*.exe
+!testdata/**
+.DS_Store

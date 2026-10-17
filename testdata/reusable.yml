@@ -1,0 +1,13 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  call:
+    uses: moveeeax/reusable-workflows/.github/workflows/release.yml@v1
+    secrets: inherit
