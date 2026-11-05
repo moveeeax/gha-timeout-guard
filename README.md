@@ -1,7 +1,7 @@
 # gha-timeout-guard
 
 [![ci](https://github.com/moveeeax/gha-timeout-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/moveeeax/gha-timeout-guard/actions/workflows/ci.yml)
-[![Go](https://img.shields.io/badge/go-1.22%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Lint GitHub Actions workflows for the reliability settings nobody sets until it hurts: jobs with no
@@ -112,8 +112,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: moveeeax/gha-timeout-guard@v0.1.0
+      - uses: actions/checkout@v7
+      - uses: moveeeax/gha-timeout-guard@v0
         with:
           dir: .
           max-timeout: '30'
@@ -125,7 +125,7 @@ can set `fail-on: never` and gate on the value later.
 
 ## How it works
 
-Workflows are parsed with `gopkg.in/yaml.v3` as a raw node tree rather than unmarshalled into
+Workflows are parsed with `go.yaml.in/yaml/v3` as a raw node tree rather than unmarshalled into
 structs. Nodes carry line and column, which is what makes two things possible: findings point at the
 real line in the file, and the suggested YAML is indented to match the block it belongs in, so it can
 be pasted in without reformatting.
