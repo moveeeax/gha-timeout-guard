@@ -34,9 +34,9 @@ inputs:
     required: false
     default: ''
   version:
-    description: 'gha-timeout-guard version to install.'
+    description: 'gha-timeout-guard version to install. Empty means the ref this action is used at (e.g. v0 or v0.2.0), falling back to latest.'
     required: false
-    default: 'v0.1.0'
+    default: ''
   summary:
     description: 'Append the report to the job summary.'
     required: false
@@ -50,14 +50,19 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-go@v5
+    - uses: actions/setup-go@v7
       with:
         go-version: 'stable'
         cache: false
 
     - name: Install gha-timeout-guard
       shell: bash
-      run: go install github.com/moveeeax/gha-timeout-guard/cmd/gha-timeout-guard@${{ inputs.version }}
+      env:
+        GUARD_VERSION: ${{ inputs.version }}
+        GUARD_ACTION_REF: ${{ github.action_ref }}
+      run: |
+        version="${GUARD_VERSION:-${GUARD_ACTION_REF:-latest}}"
+        go install "github.com/moveeeax/gha-timeout-guard/cmd/gha-timeout-guard@${version}"
 
     - name: Lint workflows
       id: guard
