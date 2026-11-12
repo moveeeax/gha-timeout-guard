@@ -2,6 +2,7 @@ package lint
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -157,6 +158,39 @@ func Analyze(wf *Workflow, cfg Config) []Finding {
 	return out
 }
 
+// deployPattern matches job text that writes to something outside the runner.
+// It is the same pattern gha-concurrency-audit classifies deploys with, so the
+// two tools agree on which workflows must queue instead of cancel. Bare verbs
+// are matched as words; apply and up need their tool in front.
+var deployPattern = regexp.MustCompile(`(?i)(\b(deploy|deployment|rollout|release|publish)\b|` +
+	`\b(terraform|tofu|terragrunt)\s+apply\b|` +
+	`\bkubectl\s+(apply|rollout|set\s+image)\b|` +
+	`\bhelm\s+(upgrade|install)\b|` +
+	`\bkustomize\s+build\b.*\bkubectl\b|` +
+	`\bpulumi\s+up\b|` +
+	`\bserverless\s+deploy\b|` +
+	`\baws\s+(deploy|s3\s+sync|cloudformation\s+deploy)\b|` +
+	`\b(npm|cargo|twine|gem)\s+publish\b|` +
+	`\bdocker\s+push\b)`)
+
+// IsDeploy reports whether any job declares an environment: or runs a command
+// that changes state outside the runner. Cancelling such a run mid-way leaves
+// a half-applied deploy, so it must queue rather than cancel.
+func (w *Workflow) IsDeploy() bool {
+	for _, j := range w.Jobs {
+		if j.IsDeploy() {
+			return true
+		}
+	}
+	return false
+}
+
+// IsDeploy reports whether this job declares an environment: or runs a
+// command matching deployPattern.
+func (j Job) IsDeploy() bool {
+	return j.Environment || deployPattern.MatchString(j.text)
+}
+
 func concurrencyFindings(wf *Workflow) []Finding {
 	stacks := wf.HasEvent("push") || wf.HasEvent("pull_request") || wf.HasEvent("pull_request_target")
 	if !stacks {
@@ -164,23 +198,79 @@ func concurrencyFindings(wf *Workflow) []Finding {
 		// a concurrency group would only cancel unrelated runs.
 		return nil
 	}
+	if wf.IsDeploy() {
+		return deployConcurrencyFindings(wf)
+	}
 	mk := func(line int, rule, msg, fix string, sev Severity) Finding {
 		return Finding{File: wf.Path, Line: line, Rule: rule, Severity: sev.String(), Message: msg, Fix: fix, sev: sev}
 	}
-	group := indent(wf.RootPropCol) + "concurrency:\n" +
-		indent(wf.RootPropCol) + "  group: ${{ github.workflow }}-${{ github.ref }}\n" +
-		indent(wf.RootPropCol) + "  cancel-in-progress: true"
 	switch {
-	case !wf.HasConc:
+	case !wf.Conc.Present:
 		return []Finding{mk(1, RuleConcurrency,
 			"workflow triggers on push or pull_request with no concurrency group, so every push runs a full duplicate pipeline",
-			group, SevWarning)}
-	case !wf.Cancel:
-		return []Finding{mk(wf.ConcLine, RuleConcurrency,
+			concurrencyBlock(wf.RootPropCol, true), SevWarning)}
+	case !wf.Conc.Cancel:
+		return []Finding{mk(wf.Conc.Line, RuleConcurrency,
 			"concurrency group has no cancel-in-progress: true, so superseded runs keep burning runner minutes",
 			indent(wf.RootPropCol)+"  cancel-in-progress: true", SevWarning)}
 	}
 	return nil
+}
+
+// deployConcurrencyFindings applies the opposite advice to a deploy: it needs
+// a group so two pushes do not apply at once, and that group must queue. A
+// group on the deploy job itself is as good as one on the workflow. A group on
+// a build or test job is left alone: cancelling it only stops an older run
+// before it reaches the deploy.
+func deployConcurrencyFindings(wf *Workflow) []Finding {
+	var out []Finding
+	cancelling := func(c Concurrency, job string, line, col int) {
+		if !c.Cancel && !c.CancelExpr {
+			return
+		}
+		what := "sets cancel-in-progress: true"
+		if c.CancelExpr {
+			what = "sets cancel-in-progress to an expression that can evaluate true"
+		}
+		subject := "deploy workflow"
+		if job != "" {
+			subject = fmt.Sprintf("job %q in a deploy workflow", job)
+		}
+		out = append(out, Finding{
+			File: wf.Path, Job: job, Line: line, Rule: RuleConcurrency,
+			Severity: SevWarning.String(), sev: SevWarning,
+			Message: subject + " " + what + ", so a newer push cancels a deploy mid-apply and leaves it half-applied",
+			Fix:     indent(col) + "  cancel-in-progress: false",
+		})
+	}
+
+	guarded := wf.Conc.Present
+	if wf.Conc.Present {
+		cancelling(wf.Conc, "", wf.Conc.Line, wf.RootPropCol)
+	}
+	for _, j := range wf.Jobs {
+		if j.Conc.Present && j.IsDeploy() {
+			guarded = true
+			cancelling(j.Conc, j.ID, j.Conc.Line, j.PropCol)
+		}
+	}
+	if !guarded {
+		out = append(out, Finding{
+			File: wf.Path, Line: 1, Rule: RuleConcurrency,
+			Severity: SevWarning.String(), sev: SevWarning,
+			Message: "deploy workflow triggers on push or pull_request with no concurrency group, so two runs can apply at once and the slower one wins",
+			Fix:     concurrencyBlock(wf.RootPropCol, false),
+		})
+	}
+	return out
+}
+
+// concurrencyBlock renders the workflow-level block to paste. Deploys get
+// cancel-in-progress: false so a newer run waits for the current one.
+func concurrencyBlock(col int, cancel bool) string {
+	return indent(col) + "concurrency:\n" +
+		indent(col) + "  group: ${{ github.workflow }}-${{ github.ref }}\n" +
+		indent(col) + fmt.Sprintf("  cancel-in-progress: %t", cancel)
 }
 
 // networkCommand reports the first network-reaching command found in a run

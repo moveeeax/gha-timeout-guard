@@ -304,3 +304,103 @@ func TestContainsCommandWordBoundaries(t *testing.T) {
 		}
 	}
 }
+
+func TestDeployWithoutConcurrencyGetsQueueingBlock(t *testing.T) {
+	got := only(t, analyzeFixture(t, "deploy-no-concurrency.yml"), RuleConcurrency)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 concurrency finding, got %d", len(got))
+	}
+	if !strings.Contains(got[0].Fix, "cancel-in-progress: false") || strings.Contains(got[0].Fix, "cancel-in-progress: true") {
+		t.Errorf("deploy fix must queue, not cancel, got %q", got[0].Fix)
+	}
+	if !strings.Contains(got[0].Message, "deploy") {
+		t.Errorf("message should say why the advice differs, got %q", got[0].Message)
+	}
+}
+
+func TestDeployCancellingInProgressIsFlagged(t *testing.T) {
+	got := only(t, analyzeFixture(t, "deploy-cancel.yml"), RuleConcurrency)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 concurrency finding, got %d", len(got))
+	}
+	f := got[0]
+	if f.Line != 6 {
+		t.Errorf("line = %d, want 6 (the concurrency key)", f.Line)
+	}
+	if f.Fix != "  cancel-in-progress: false" {
+		t.Errorf("fix = %q, want the indented cancel-in-progress: false line", f.Fix)
+	}
+	if !strings.Contains(f.Message, "half-applied") {
+		t.Errorf("message = %q", f.Message)
+	}
+}
+
+func TestDeployJobLevelQueueIsEnough(t *testing.T) {
+	// The test job cancels, which only stops an older run before it reaches
+	// the deploy; the deploy job queues. Nothing to report.
+	if got := analyzeFixture(t, "deploy-queued.yml"); len(got) != 0 {
+		t.Fatalf("expected no findings, got %v", rules(got))
+	}
+}
+
+func TestDeployJobCancelExpressionIsFlagged(t *testing.T) {
+	src := `name: ship
+on: [push]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: deploy
+      cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+    steps:
+      - run: npm publish
+`
+	wf, err := Parse("inline.yml", []byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := only(t, Analyze(wf, Config{MaxTimeout: 60}), RuleConcurrency)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 concurrency finding, got %d", len(got))
+	}
+	f := got[0]
+	if f.Job != "deploy" || f.Line != 7 {
+		t.Errorf("job=%q line=%d, want deploy and 7", f.Job, f.Line)
+	}
+	if f.Fix != "      cancel-in-progress: false" {
+		t.Errorf("fix = %q, want the job-indented line", f.Fix)
+	}
+	if !strings.Contains(f.Message, "expression") {
+		t.Errorf("message should name the expression, got %q", f.Message)
+	}
+}
+
+func TestDeployClassification(t *testing.T) {
+	cases := []struct {
+		job  string
+		want bool
+	}{
+		{"environment: prod\n    steps:\n      - run: make", true},
+		{"steps:\n      - run: terraform apply -auto-approve", true},
+		{"steps:\n      - run: tofu apply", true},
+		{"steps:\n      - run: helm upgrade --install x ./c", true},
+		{"steps:\n      - run: docker push ghcr.io/x/y", true},
+		{"steps:\n      - name: Deploy docs\n        run: make docs", true},
+		{"uses: org/repo/.github/workflows/release.yml@v1", true},
+		{"steps:\n      - run: terraform plan", false},
+		{"steps:\n      - run: helm lint ./chart", false},
+		{"steps:\n      - run: docker pull alpine", false},
+		{"steps:\n      - run: go test ./...", false},
+	}
+	for _, c := range cases {
+		src := "on: [push]\njobs:\n  j:\n    " + c.job + "\n"
+		wf, err := Parse("inline.yml", []byte(src))
+		if err != nil {
+			t.Fatalf("%q: %v", c.job, err)
+		}
+		if got := wf.IsDeploy(); got != c.want {
+			t.Errorf("IsDeploy(%q) = %v, want %v", c.job, got, c.want)
+		}
+	}
+}
