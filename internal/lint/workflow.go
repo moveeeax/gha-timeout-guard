@@ -50,7 +50,24 @@ type Job struct {
 	Reusable        bool
 	ContinueOnError bool
 	ContinueLine    int
+	Environment     bool
+	Conc            Concurrency
 	Steps           []Step
+
+	// text is the job's uses: value plus every step name, uses and run, used
+	// to tell a deploy job from a build.
+	text string
+}
+
+// Concurrency is a concurrency: block at workflow or job level.
+type Concurrency struct {
+	Present bool
+	Line    int
+	// Cancel is a literal cancel-in-progress: true.
+	Cancel bool
+	// CancelExpr is a cancel-in-progress written as a ${{ }} expression,
+	// which cancels on whichever runs it evaluates true for.
+	CancelExpr bool
 }
 
 // Workflow is a parsed workflow file.
@@ -58,9 +75,7 @@ type Workflow struct {
 	Path        string
 	Name        string
 	Events      []string
-	HasConc     bool
-	ConcLine    int
-	Cancel      bool
+	Conc        Concurrency
 	RootPropCol int
 	Jobs        []Job
 }
@@ -152,6 +167,42 @@ func onNode(root *yaml.Node) *yaml.Node {
 	return nil
 }
 
+// parseConcurrency reads the concurrency: key of a workflow or job mapping. The
+// string form (concurrency: name) is a group with nothing cancelled.
+func parseConcurrency(parent *yaml.Node) Concurrency {
+	n := mapGet(parent, "concurrency")
+	if n == nil {
+		return Concurrency{}
+	}
+	c := Concurrency{Present: true, Line: mapKey(parent, "concurrency").Line}
+	if ci := mapGet(n, "cancel-in-progress"); ci != nil {
+		c.Cancel = isTrue(ci)
+		c.CancelExpr = ci.Kind == yaml.ScalarNode && strings.Contains(ci.Value, "${{")
+	}
+	return c
+}
+
+// jobText collects the strings a job is classified by: a reusable-workflow
+// uses: path, and each step's name, uses and run.
+func jobText(job *yaml.Node) string {
+	var sb strings.Builder
+	if u := scalar(mapGet(job, "uses")); u != "" {
+		sb.WriteString(u + "\n")
+	}
+	steps := mapGet(job, "steps")
+	if steps == nil || steps.Kind != yaml.SequenceNode {
+		return sb.String()
+	}
+	for _, sn := range steps.Content {
+		for _, key := range []string{"name", "uses", "run"} {
+			if v := scalar(mapGet(sn, key)); v != "" {
+				sb.WriteString(v + "\n")
+			}
+		}
+	}
+	return sb.String()
+}
+
 // Parse reads a workflow from bytes. path is only used for reporting.
 func Parse(path string, data []byte) (*Workflow, error) {
 	var doc yaml.Node
@@ -173,13 +224,7 @@ func Parse(path string, data []byte) (*Workflow, error) {
 		RootPropCol: propCol(root, 1),
 	}
 
-	if conc := mapGet(root, "concurrency"); conc != nil {
-		wf.HasConc = true
-		wf.ConcLine = mapKey(root, "concurrency").Line
-		if conc.Kind == yaml.MappingNode {
-			wf.Cancel = isTrue(mapGet(conc, "cancel-in-progress"))
-		}
-	}
+	wf.Conc = parseConcurrency(root)
 
 	jobs := mapGet(root, "jobs")
 	if jobs == nil || jobs.Kind != yaml.MappingNode {
@@ -196,6 +241,9 @@ func Parse(path string, data []byte) (*Workflow, error) {
 			PropCol: propCol(v, k.Column+2),
 		}
 		j.Reusable = mapGet(v, "uses") != nil
+		j.Environment = mapGet(v, "environment") != nil
+		j.Conc = parseConcurrency(v)
+		j.text = jobText(v)
 		if t := mapGet(v, "timeout-minutes"); t != nil {
 			j.HasTimeout = true
 			j.TimeoutLine = mapKey(v, "timeout-minutes").Line

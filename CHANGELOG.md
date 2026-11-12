@@ -8,6 +8,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- The `concurrency` rule is deploy-aware. A workflow where a job declares
+  `environment:` or runs a deploy command (`terraform apply`, `helm upgrade`,
+  `kubectl apply`, `docker push`, `npm publish` and the rest of the
+  gha-concurrency-audit pattern) now gets a suggested block with
+  `cancel-in-progress: false`, and `cancel-in-progress: true` (or an
+  expression) on such a workflow or deploy job is reported instead of
+  recommended. A job-level group on the deploy job satisfies the rule.
+
 - YAML parsing moved from the archived `gopkg.in/yaml.v3` to its maintained
   successor `go.yaml.in/yaml/v3` (v3.0.6).
 - Minimum Go version raised to 1.26; CI tests Go 1.26 and 1.27.
